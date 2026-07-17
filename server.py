@@ -12,6 +12,10 @@ latest_location = {
     "course": None,
 }
 
+trail_points = []
+
+MAX_TRAIL_POINTS = 1000
+
 
 @app.route("/")
 def map_page():
@@ -51,7 +55,7 @@ def map_page():
             font-size: 13px;
             line-height: 1.45;
             color: #111;
-            min-width: 210px;
+            min-width: 230px;
             border: 1px solid rgba(0,0,0,0.08);
         }
 
@@ -173,7 +177,7 @@ def map_page():
 
     <div id="map"></div>
 
-    <div class="credit">Live GPS trace · Mappi</div>
+    <div class="credit">Live GPS trail · Mappi</div>
 
     <script>
         const map = L.map('map', {
@@ -185,12 +189,12 @@ def map_page():
             position: 'topright'
         }).addTo(map);
 
-        // Sleek, light map with visible greenery and rivers.
         L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
             maxZoom: 19
         }).addTo(map);
 
         let marker = null;
+        let trailLine = null;
         let firstFix = true;
 
         const mappiIcon = L.divIcon({
@@ -220,12 +224,33 @@ def map_page():
 
         async function updateMap() {
             try {
-                const response = await fetch('/location');
+                const response = await fetch('/trail');
                 const data = await response.json();
 
-                if (data.latitude && data.longitude) {
-                    const lat = Number(data.latitude);
-                    const lon = Number(data.longitude);
+                const latest = data.latest;
+                const trail = data.trail || [];
+
+                if (latest.latitude && latest.longitude) {
+                    const lat = Number(latest.latitude);
+                    const lon = Number(latest.longitude);
+
+                    const trailLatLngs = trail
+                        .filter(p => p.latitude && p.longitude)
+                        .map(p => [Number(p.latitude), Number(p.longitude)]);
+
+                    if (trailLatLngs.length > 1) {
+                        if (!trailLine) {
+                            trailLine = L.polyline(trailLatLngs, {
+                                color: "#111",
+                                weight: 3,
+                                opacity: 0.72,
+                                lineCap: "round",
+                                lineJoin: "round"
+                            }).addTo(map);
+                        } else {
+                            trailLine.setLatLngs(trailLatLngs);
+                        }
+                    }
 
                     if (!marker) {
                         marker = L.marker([lat, lon], {
@@ -244,16 +269,17 @@ def map_page():
                     }
 
                     marker.bindPopup(
-                        `<strong>${data.device || "mappi"}</strong><br>
+                        `<strong>${latest.device || "mappi"}</strong><br>
                         ${lat.toFixed(6)}, ${lon.toFixed(6)}<br>
-                        <span style="color:#666;">Updated ${formatTimestamp(data.timestamp)}</span>`
+                        <span style="color:#666;">Updated ${formatTimestamp(latest.timestamp)}</span>`
                     );
 
                     document.getElementById("info").innerHTML =
-                        `<strong>${data.device || "mappi"}</strong><br>
+                        `<strong>${latest.device || "mappi"}</strong><br>
                         Latitude&nbsp;&nbsp; ${lat.toFixed(6)}<br>
-                        Longitude&nbsp; ${lon.toFixed(6)}
-                        <div id="status">Last update: ${formatTimestamp(data.timestamp)}</div>`;
+                        Longitude&nbsp; ${lon.toFixed(6)}<br>
+                        Trail points&nbsp; ${trail.length}
+                        <div id="status">Last update: ${formatTimestamp(latest.timestamp)}</div>`;
                 } else {
                     document.getElementById("status").innerText =
                         "Waiting for GPS fix.";
@@ -278,9 +304,18 @@ def location():
     return jsonify(latest_location)
 
 
+@app.route("/trail", methods=["GET"])
+def trail():
+    return jsonify({
+        "latest": latest_location,
+        "trail": trail_points
+    })
+
+
 @app.route("/update-location", methods=["POST"])
 def update_location():
     global latest_location
+    global trail_points
 
     data = request.get_json()
 
@@ -293,7 +328,7 @@ def update_location():
     if latitude is None or longitude is None:
         return jsonify({"error": "Missing latitude or longitude"}), 400
 
-    latest_location = {
+    point = {
         "device": data.get("device", "mappi"),
         "latitude": float(latitude),
         "longitude": float(longitude),
@@ -302,11 +337,31 @@ def update_location():
         "course": data.get("course"),
     }
 
+    latest_location = point
+    trail_points.append(point)
+
+    if len(trail_points) > MAX_TRAIL_POINTS:
+        trail_points = trail_points[-MAX_TRAIL_POINTS:]
+
     print("Updated location:", latest_location)
+    print("Trail points:", len(trail_points))
 
     return jsonify({
         "status": "ok",
-        "location": latest_location
+        "location": latest_location,
+        "trail_points": len(trail_points)
+    })
+
+
+@app.route("/clear-trail", methods=["POST"])
+def clear_trail():
+    global trail_points
+
+    trail_points = []
+
+    return jsonify({
+        "status": "ok",
+        "message": "Trail cleared"
     })
 
 
